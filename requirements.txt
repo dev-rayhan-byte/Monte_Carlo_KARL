@@ -1,0 +1,17 @@
+# Core App Framework
+streamlit==1.35.0
+
+# Data Handling
+pandas==2.2.2
+numpy==1.26.4
+
+# Visualization
+matplotlib==3.8.4
+imageio==2.34.1
+
+# Scientific Tools
+ase==3.22.1         # Atomic Simulation Environment
+openpyxl==3.1.2     # Excel output
+
+# (Optional) Watchdog for auto-reload (only if developing locally)
+# watchdog==4.0.0
