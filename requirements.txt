@@ -1,7 +1,20 @@
-# requirements.txt
+# --- Core Application Framework ---
+streamlit==1.37.0
+
+# --- Scientific & Numerical Computing ---
+# For atomic structure manipulation and neighbor lists
 ase==3.22.1
-matplotlib==3.8.4
+# For numerical operations and arrays
 numpy==1.26.4
-openpyxl==3.1.2
+# For data manipulation (logs) and Excel export
 pandas==2.2.2
-streamlit==1.35.0
+
+# --- Visualization & Plotting ---
+# For interactive 3D molecular visualization
+py3dmol==2.1.0
+# For interactive 2D plots
+plotly==5.22.0
+
+# --- File Format Support ---
+# Required by pandas to write .xlsx files
+openpyxl==3.1.3
