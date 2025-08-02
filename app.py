@@ -9,14 +9,12 @@ import math
 import tempfile
 import ast
 import base64
-import zipfile
 from openpyxl import Workbook
 from ase.cluster import FaceCenteredCubic, BodyCenteredCubic, HexagonalClosedPacked
-from ase.io import write, read
+from ase.io import write
 from ase.neighborlist import build_neighbor_list
 import matplotlib.pyplot as plt
-
-# For 3D visualization in Streamlit
+from streamlit.components.v1 import html
 import py3Dmol
 
 # ---- Streamlit Page Config ----
@@ -67,32 +65,6 @@ def count_surface(p, A):
     ratio = surf_A / surf if surf else 0
     return total_A, surf, surf_A, ratio
 
-def visualize_xyz(xyz_file, atom_A, atom_B, radius=1.5):
-    with open(xyz_file) as f:
-        xyz_data = f.read()
-    view = py3Dmol.view(width=400, height=400)
-    view.addModel(xyz_data, 'xyz')
-    view.setStyle({ "elem": atom_A }, { "sphere": { "color": "gold", "radius": radius } })
-    view.setStyle({ "elem": atom_B }, { "sphere": { "color": "green", "radius": radius } })
-    view.setBackgroundColor("white")
-    view.zoomTo()
-    return view
-
-def make_download_link(path, label=None):
-    label = label or os.path.basename(path)
-    with open(path, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode()
-    href = f'<a href="data:application/octet-stream;base64,{b64}" download="{os.path.basename(path)}">📥 {label}</a>'
-    st.markdown(href, unsafe_allow_html=True)
-
-def zip_snapshots(folder_path, zip_path):
-    with zipfile.ZipFile(zip_path, 'w') as zipf:
-        for root, _, files in os.walk(folder_path):
-            for file in files:
-                if file.endswith('.xyz'):
-                    zipf.write(os.path.join(root, file), arcname=file)
-
-# ---- Simulation Core ----
 def run_simulation(params, progress_callback=None):
     A = params['element_A']
     B = params['element_B']
@@ -100,7 +72,6 @@ def run_simulation(params, progress_callback=None):
     T = params['temperature']
     N_STEPS = params['n_steps']
     SAVE_INTERVAL = params['save_interval']
-    SNAPSHOT_INTERVAL = params.get('snapshot_interval', 500)
     LAYERS = params['layers']
     SURFACES = params['surfaces']
     coeffs = params['coefficients']
@@ -120,13 +91,8 @@ def run_simulation(params, progress_callback=None):
 
     initial_surface_data = count_surface(particle, A)
 
-    # Save initial structure
-    initial_xyz = tempfile.NamedTemporaryFile(delete=False, suffix='.xyz').name
-    write(initial_xyz, particle)
-
     # Prepare Storage
-    trajectory_folder = "trajectory"
-    os.makedirs(trajectory_folder, exist_ok=True)
+    os.makedirs("trajectory", exist_ok=True)
     log = []
     energy = calculate_energy(particle, A, coeffs)
     start_time = time.time()
@@ -162,16 +128,16 @@ def run_simulation(params, progress_callback=None):
             if progress_callback:
                 progress_callback(step, energy, ratio)
 
-        if step % SNAPSHOT_INTERVAL == 0:
-            snapshot_path = os.path.join(trajectory_folder, f"step_{step:05d}.xyz")
-            write(snapshot_path, particle)
+        if step % params.get('snapshot_interval', 500) == 0:
+            write(f"trajectory/step_{step:05d}.xyz", particle)
 
     duration = time.time() - start_time
 
-    # Save final structure
+    # Save Initial and Final XYZ files
+    initial_xyz = tempfile.NamedTemporaryFile(delete=False, suffix='.xyz').name
     final_xyz = tempfile.NamedTemporaryFile(delete=False, suffix='.xyz').name
+    write(initial_xyz, ClusterBuilder(A, surfaces=SURFACES, layers=LAYERS))
     write(final_xyz, particle)
-    final_surface_data = count_surface(particle, A)
 
     # Save Excel Log
     xlsx_file = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx').name
@@ -206,9 +172,27 @@ def run_simulation(params, progress_callback=None):
         "xlsx_file": xlsx_file,
         "duration": duration,
         "initial_surface_data": initial_surface_data,
-        "final_surface_data": final_surface_data,
-        "trajectory_folder": trajectory_folder
+        "final_surface_data": count_surface(particle, A)
     }
+
+def make_download_link(path, label=None):
+    label = label or os.path.basename(path)
+    with open(path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode()
+    href = f'<a href="data:application/octet-stream;base64,{b64}" download="{os.path.basename(path)}">📥 {label}</a>'
+    st.markdown(href, unsafe_allow_html=True)
+
+def visualize_xyz(xyz_file, atom_A, atom_B, radius=1.5):
+    with open(xyz_file) as f:
+        xyz_data = f.read()
+
+    view = py3Dmol.view(width=450, height=420)
+    view.addModel(xyz_data, 'xyz')
+    view.setStyle({ "elem": atom_A }, { "sphere": { "color": "gold", "radius": radius } })
+    view.setStyle({ "elem": atom_B }, { "sphere": { "color": "green", "radius": radius } })
+    view.setBackgroundColor("white")
+    view.zoomTo()
+    return view
 
 # ---- Streamlit Sidebar UI ----
 st.sidebar.header("Simulation Parameters")
@@ -252,6 +236,18 @@ with st.sidebar.expander("Energy Coefficients"):
 run_button = st.sidebar.button("▶️ Run Simulation")
 progress_bar = st.sidebar.progress(0)
 status_placeholder = st.empty()
+
+# Developer team info at sidebar bottom
+st.sidebar.markdown("---")
+st.sidebar.markdown("### Developer Team")
+st.sidebar.markdown("""
+- **Project Developer** : Rayhan Miah  
+- **User Interface Developer** : Al Amin  
+- **System Quality Checker** : Abu Sadat  
+- **System I/O QC** : Md. Sabbir Ahmed  
+- **Project Supervisor** : Dr. Md. Khorshed Alam
+- **Affiliation ** : KARL, BU
+""")
 
 # ---- Simulation Execution ----
 if run_button:
@@ -318,7 +314,6 @@ if run_button:
         col2.metric(f"Initial Surface {element_A} Ratio", f"{init_ratio:.4f}")
         col3.metric(f"Final Surface {element_A} Ratio", f"{final_ratio:.4f}")
 
-        # Show initial & final atomic composition details side by side
         st.subheader("Atomic Composition & Surface Details")
         colA, colB = st.columns(2)
         with colA:
@@ -328,8 +323,7 @@ if run_button:
             st.write(f"{element_A} on Surface: {init_surf_A}")
             st.write(f"Surface {element_A} Ratio: {init_ratio:.4f}")
             view_init = visualize_xyz(res["initial_xyz"], element_A, element_B)
-            view_init.show()
-            st.write(view_init.render())
+            html(view_init.render(), height=420)
 
         with colB:
             st.markdown("**Final Structure**")
@@ -338,8 +332,7 @@ if run_button:
             st.write(f"{element_A} on Surface: {final_surf_A}")
             st.write(f"Surface {element_A} Ratio: {final_ratio:.4f}")
             view_final = visualize_xyz(res["final_xyz"], element_A, element_B)
-            view_final.show()
-            st.write(view_final.render())
+            html(view_final.render(), height=420)
 
         st.subheader("Evolution Plots")
         fig1, ax1 = plt.subplots()
@@ -356,26 +349,11 @@ if run_button:
         ax2.grid(True)
         st.pyplot(fig2)
 
-        # Zip snapshots for download
-        zip_path = tempfile.NamedTemporaryFile(delete=False, suffix='.zip').name
-        zip_snapshots(res["trajectory_folder"], zip_path)
-
         st.subheader("Download Artifacts")
         with st.expander("Files"):
             make_download_link(res["initial_xyz"], "Initial structure (.xyz)")
             make_download_link(res["final_xyz"], "Final structure (.xyz)")
             make_download_link(res["xlsx_file"], "Simulation log (.xlsx)")
-            make_download_link(zip_path, "All snapshots (.zip)")
 
         st.subheader("Raw Log Data")
         st.dataframe(df_log)
-
-# ---- Developer Team Credits ----
-st.markdown("---")
-st.markdown("### Developer Team")
-st.markdown("""
-- **Project Developer** : Rayhan Miah  
-- **User Interface Developer** : Al Amin  
-- **System Quality Checker** : Abu Sadat  
-- **System I/O QC** : Md. Sabbir Ahmed  
-""")
