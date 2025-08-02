@@ -214,7 +214,7 @@ with st.sidebar.expander("Thermodynamics"):
 
 with st.sidebar.expander("Lattice / Geometry"):
     lattice_type = st.selectbox("Lattice Type", ["fcc", "bcc", "hcp"])
-    layers = st.multiselect("Layers (x,y,z)", options=[1,2,3,4,5,6,7,8], default=[7,7,7])
+    layers = st.multiselect("Layers (x,y,z)", options=[1,2,3,4,5,6,7,8,9], default=[7,7,7])
     if len(layers) != 3:
         st.warning("Please select exactly 3 values for layers.")
         layers = [7,7,7]
@@ -245,12 +245,14 @@ status_placeholder = st.empty()
 st.sidebar.markdown("---")
 st.sidebar.markdown("### Developer Team")
 st.sidebar.markdown("""
-- **Project Developer**: Rayhan Miah  
-- **UI Developer**: Al Amin  
+- **Simulator Developer**: Rayhan Miah  
+- **Concept Developer**: Al Amin  
 - **System QC**: Abu Sadat  
 - **I/O QC**: Md. Sabbir Ahmed  
 - **Supervisor**: Dr. Md. Khorshed Alam  
 - **Affiliation**: KARL, BU
+- **All Rights Reserved**
+- **email**: dmkalam@bu.ac.bd, rmiha19.phy@bu.ac.bd
 """)
 
 # ---- Simulation Execution ----
@@ -321,12 +323,12 @@ if run_button:
         st.subheader("Atomic Composition & Surface Details")
         colA, colB = st.columns(2)
         with colA:
-            st.markdown("**Initial Structure**")
+            st.markdown("**Initial Structure (Element A is denoted by Yellow)**")
             view_init = visualize_xyz(res["initial_xyz"], element_A, element_B, label="Initial")
             html(view_init._make_html(), height=420)
 
         with colB:
-            st.markdown("**Final Structure**")
+            st.markdown("**Final Structure (Element A is denoted by Yellow)**")
             view_final = visualize_xyz(res["final_xyz"], element_A, element_B, label="Final")
             html(view_final._make_html(), height=420)
 
@@ -353,3 +355,4 @@ if run_button:
 
         st.subheader("Raw Log Data")
         st.dataframe(df_log)
+
