@@ -1,4 +1,3 @@
-# Monte Carlo Nanoparticle Simulator - Streamlit App (Polished & Debugged Version)
 import traceback
 import streamlit as st
 import pandas as pd
@@ -10,7 +9,7 @@ import math
 import tempfile
 import ast
 import base64
-import shutil
+import zipfile
 from openpyxl import Workbook
 from ase.cluster import FaceCenteredCubic, BodyCenteredCubic, HexagonalClosedPacked
 from ase.io import write
@@ -25,7 +24,7 @@ st.set_page_config(page_title="Monte Carlo Nanoparticle Simulator", layout="wide
 # ---- Constants ----
 BOLTZMANN_K = 8.617333262e-5
 BULK_COORD = 12
-LATTICE_MAP = {
+lattice_map = {
     'fcc': FaceCenteredCubic,
     'bcc': BodyCenteredCubic,
     'hcp': HexagonalClosedPacked
@@ -37,7 +36,7 @@ def symbol_type(sym, A):
 
 def calculate_energy(p, A, coeffs):
     nl = build_neighbor_list(p, bothways=True, self_interaction=False)
-    count = {k: 0 for k in coeffs}
+    count = {k: 0 for k in coeffs if not k.endswith('-out')}  # Only valid keys
     for i in range(len(p)):
         t_i = symbol_type(p[i].symbol, A)
         neighbors = nl.get_neighbors(i)[0]
@@ -80,10 +79,11 @@ def run_simulation(params, progress_callback=None):
     coeffs = params['coefficients']
     lattice_type = params['lattice_type']
 
-    ClusterBuilder = LATTICE_MAP.get(lattice_type)
+    ClusterBuilder = lattice_map.get(lattice_type)
     if ClusterBuilder is None:
-        raise ValueError(f"Unsupported lattice type '{lattice_type}'.")
+        raise ValueError(f"Unsupported lattice type '{lattice_type}'. Choose from 'fcc', 'bcc', or 'hcp'.")
 
+    # Build Initial Particle
     particle = ClusterBuilder(A, surfaces=SURFACES, layers=LAYERS)
     n_atoms = len(particle)
     n_A = int(n_atoms * composition_A)
@@ -93,92 +93,102 @@ def run_simulation(params, progress_callback=None):
 
     initial_surface_data = count_surface(particle, A)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        log = []
-        energy = calculate_energy(particle, A, coeffs)
-        start_time = time.time()
+    # Prepare Storage
+    tmp_dir = tempfile.mkdtemp()
+    traj_dir = os.path.join(tmp_dir, "trajectory")
+    os.makedirs(traj_dir, exist_ok=True)
 
+    log = []
+    energy = calculate_energy(particle, A, coeffs)
+    start_time = time.time()
+
+    # Monte Carlo Loop
+    for step in range(1, N_STEPS + 1):
         nl = build_neighbor_list(particle, bothways=True, self_interaction=False)
+        i = np.random.randint(0, n_atoms)
+        neighbors = nl.get_neighbors(i)[0]
+        if len(neighbors) == 0:
+            continue
+        j = np.random.choice(neighbors)
+        if particle[i].symbol == particle[j].symbol:
+            continue
 
-        for step in range(1, N_STEPS + 1):
-            i = np.random.randint(0, n_atoms)
-            neighbors = nl.get_neighbors(i)[0]
-            if len(neighbors) == 0:
-                continue
-            j = np.random.choice(neighbors)
-            if particle[i].symbol == particle[j].symbol:
-                continue
+        trial = particle.copy()
+        trial[i].symbol, trial[j].symbol = trial[j].symbol, trial[i].symbol
+        dE = calculate_energy(trial, A, coeffs) - energy
 
-            trial = particle.copy()
-            trial[i].symbol, trial[j].symbol = trial[j].symbol, trial[i].symbol
-            dE = calculate_energy(trial, A, coeffs) - energy
+        if dE < 0 or np.random.random() < math.exp(-dE / (BOLTZMANN_K * T)):
+            particle = trial
+            energy += dE
 
-            if dE < 0 or np.random.random() < math.exp(-dE / (BOLTZMANN_K * T)):
-                particle = trial
-                energy += dE
-                nl = build_neighbor_list(particle, bothways=True, self_interaction=False)
+        if step % SAVE_INTERVAL == 0:
+            total_A, surf, surf_A, ratio = count_surface(particle, A)
+            log.append({
+                'Step': step,
+                'Energy (eV)': energy,
+                f'Total {A}': total_A,
+                'Surface Atoms': surf,
+                f'{A} on Surface': surf_A,
+                f'Surface {A} Ratio': ratio
+            })
+            if progress_callback:
+                progress_callback(step, energy, ratio)
 
-            if step % SAVE_INTERVAL == 0:
-                total_A, surf, surf_A, ratio = count_surface(particle, A)
-                log.append({
-                    'Step': step,
-                    'Energy (eV)': energy,
-                    f'Total {A}': total_A,
-                    'Surface Atoms': surf,
-                    f'{A} on Surface': surf_A,
-                    f'Surface {A} Ratio': ratio
-                })
-                if progress_callback:
-                    progress_callback(step, energy, ratio)
+        if step % SNAPSHOT_INTERVAL == 0:
+            write(f"{traj_dir}/step_{step:05d}.xyz", particle)
 
-            if step % SNAPSHOT_INTERVAL == 0:
-                write(os.path.join(tmpdir, f"step_{step:05d}.xyz"), particle)
+    duration = time.time() - start_time
 
-        duration = time.time() - start_time
+    # Save Initial and Final XYZ files
+    initial_xyz = os.path.join(tmp_dir, "initial.xyz")
+    final_xyz = os.path.join(tmp_dir, "final.xyz")
+    write(initial_xyz, ClusterBuilder(A, surfaces=SURFACES, layers=LAYERS))
+    write(final_xyz, particle)
 
-        initial_xyz = os.path.join(tmpdir, 'initial.xyz')
-        final_xyz = os.path.join(tmpdir, 'final.xyz')
-        write(initial_xyz, ClusterBuilder(A, surfaces=SURFACES, layers=LAYERS))
-        write(final_xyz, particle)
+    # Save Excel Log
+    xlsx_file = os.path.join(tmp_dir, "simulation_log.xlsx")
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Simulation Log"
 
-        xlsx_file = os.path.join(tmpdir, 'simulation_log.xlsx')
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Simulation Log"
+    meta = [
+        ("Element A", A), ("Element B", B), ("Composition A", composition_A),
+        ("Temperature (K)", T), ("MC Steps", N_STEPS),
+        ("Save Interval", SAVE_INTERVAL), ("Total Atoms", n_atoms)
+    ]
+    for i, (k, v) in enumerate(meta, 1):
+        ws.cell(row=i, column=1, value=k)
+        ws.cell(row=i, column=2, value=v)
 
-        meta = [
-            ("Element A", A), ("Element B", B), ("Composition A", composition_A),
-            ("Temperature (K)", T), ("MC Steps", N_STEPS),
-            ("Save Interval", SAVE_INTERVAL), ("Total Atoms", n_atoms)
-        ]
-        for i, (k, v) in enumerate(meta, 1):
-            ws.cell(row=i, column=1, value=k)
-            ws.cell(row=i, column=2, value=v)
-
-        header_row = len(meta) + 2
-        if log:
-            headers = list(log[0].keys())
+    header_row = len(meta) + 2
+    if log:
+        headers = list(log[0].keys())
+        for j, h in enumerate(headers, 1):
+            ws.cell(row=header_row, column=j, value=h)
+        for i, entry in enumerate(log, header_row + 1):
             for j, h in enumerate(headers, 1):
-                ws.cell(row=header_row, column=j, value=h)
-            for i, entry in enumerate(log, header_row + 1):
-                for j, h in enumerate(headers, 1):
-                    ws.cell(row=i, column=j, value=entry[h])
+                ws.cell(row=i, column=j, value=entry[h])
 
-        wb.save(xlsx_file)
+    wb.save(xlsx_file)
 
-        zip_path = os.path.join(tmpdir, 'simulation_results.zip')
-        shutil.make_archive(zip_path.replace('.zip', ''), 'zip', tmpdir)
+    # ZIP all outputs
+    zip_file = os.path.join(tmp_dir, "simulation_artifacts.zip")
+    with zipfile.ZipFile(zip_file, 'w') as zipf:
+        zipf.write(initial_xyz, arcname="initial_structure.xyz")
+        zipf.write(final_xyz, arcname="final_structure.xyz")
+        zipf.write(xlsx_file, arcname="simulation_log.xlsx")
+        for file in os.listdir(traj_dir):
+            zipf.write(os.path.join(traj_dir, file), arcname=f"trajectory/{file}")
 
-        return {
-            "initial_xyz": initial_xyz,
-            "final_xyz": final_xyz,
-            "log": pd.DataFrame(log),
-            "xlsx_file": xlsx_file,
-            "duration": duration,
-            "initial_surface_data": initial_surface_data,
-            "final_surface_data": count_surface(particle, A),
-            "zip_file": zip_path
-        }
+    return {
+        "initial_xyz": initial_xyz,
+        "final_xyz": final_xyz,
+        "log": pd.DataFrame(log),
+        "zip_file": zip_file,
+        "duration": duration,
+        "initial_surface_data": initial_surface_data,
+        "final_surface_data": count_surface(particle, A)
+    }
 
 def make_download_link(path, label=None):
     label = label or os.path.basename(path)
@@ -237,17 +247,6 @@ with st.sidebar.expander("Energy Coefficients"):
 run_button = st.sidebar.button("▶️ Run Simulation")
 progress_bar = st.sidebar.progress(0)
 status_placeholder = st.empty()
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("### Developer Team")
-st.sidebar.markdown("""
-- **Project Developer** : Rayhan Miah  
-- **UI Developer** : Al Amin  
-- **Quality Checker** : Abu Sadat  
-- **System I/O QC** : Md. Sabbir Ahmed  
-- **Supervisor** : Dr. Md. Khorshed Alam  
-- **Affiliation** : KARL, BU
-""")
 
 # ---- Simulation Execution ----
 if run_button:
@@ -319,7 +318,6 @@ if run_button:
             st.markdown("**Initial Structure**")
             view_init = visualize_xyz(res["initial_xyz"], element_A, element_B)
             html(view_init._make_html(), height=420)
-
         with colB:
             st.markdown("**Final Structure**")
             view_final = visualize_xyz(res["final_xyz"], element_A, element_B)
@@ -341,11 +339,7 @@ if run_button:
         st.pyplot(fig2)
 
         st.subheader("Download Artifacts")
-        with st.expander("Files"):
-            make_download_link(res["initial_xyz"], "Initial structure (.xyz)")
-            make_download_link(res["final_xyz"], "Final structure (.xyz)")
-            make_download_link(res["xlsx_file"], "Simulation log (.xlsx)")
-            make_download_link(res["zip_file"], "All Results (.zip)")
+        make_download_link(res["zip_file"], "Download All Artifacts (.zip)")
 
         st.subheader("Raw Log Data")
         st.dataframe(df_log)
