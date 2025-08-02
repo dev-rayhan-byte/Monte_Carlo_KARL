@@ -1,8 +1,7 @@
-streamlit>=1.18.1
-ase>=3.22.1
-numpy>=1.23.0
-openpyxl>=3.0.10
-matplotlib>=3.5.1
-tqdm>=4.64.1
-imageio>=2.27.0
-py3Dmol>=0.9.1
+streamlit
+pandas
+numpy
+openpyxl
+ase
+matplotlib
+py3dmol
