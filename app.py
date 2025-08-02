@@ -9,7 +9,6 @@ import math
 import tempfile
 import ast
 import base64
-import zipfile
 from openpyxl import Workbook
 from ase.cluster import FaceCenteredCubic, BodyCenteredCubic, HexagonalClosedPacked
 from ase.io import write
@@ -36,7 +35,7 @@ def symbol_type(sym, A):
 
 def calculate_energy(p, A, coeffs):
     nl = build_neighbor_list(p, bothways=True, self_interaction=False)
-    count = {k: 0 for k in coeffs if not k.endswith('-out')}  # Only valid keys
+    count = {k: 0 for k in coeffs}
     for i in range(len(p)):
         t_i = symbol_type(p[i].symbol, A)
         neighbors = nl.get_neighbors(i)[0]
@@ -73,7 +72,6 @@ def run_simulation(params, progress_callback=None):
     T = params['temperature']
     N_STEPS = params['n_steps']
     SAVE_INTERVAL = params['save_interval']
-    SNAPSHOT_INTERVAL = params['snapshot_interval']
     LAYERS = params['layers']
     SURFACES = params['surfaces']
     coeffs = params['coefficients']
@@ -91,22 +89,23 @@ def run_simulation(params, progress_callback=None):
     for i in range(n_atoms):
         particle[i].symbol = A if i in indices_A else B
 
+    # Save initial structure after assignment
+    tmp_dir = tempfile.mkdtemp()
+    initial_xyz = os.path.join(tmp_dir, "initial.xyz")
+    write(initial_xyz, particle.copy())
+
     initial_surface_data = count_surface(particle, A)
 
     # Prepare Storage
-    tmp_dir = tempfile.mkdtemp()
-    traj_dir = os.path.join(tmp_dir, "trajectory")
-    os.makedirs(traj_dir, exist_ok=True)
-
+    os.makedirs("trajectory", exist_ok=True)
     log = []
     energy = calculate_energy(particle, A, coeffs)
     start_time = time.time()
 
     # Monte Carlo Loop
     for step in range(1, N_STEPS + 1):
-        nl = build_neighbor_list(particle, bothways=True, self_interaction=False)
         i = np.random.randint(0, n_atoms)
-        neighbors = nl.get_neighbors(i)[0]
+        neighbors = build_neighbor_list(particle).get_neighbors(i)[0]
         if len(neighbors) == 0:
             continue
         j = np.random.choice(neighbors)
@@ -134,15 +133,13 @@ def run_simulation(params, progress_callback=None):
             if progress_callback:
                 progress_callback(step, energy, ratio)
 
-        if step % SNAPSHOT_INTERVAL == 0:
-            write(f"{traj_dir}/step_{step:05d}.xyz", particle)
+        if step % params.get('snapshot_interval', 500) == 0:
+            write(f"trajectory/step_{step:05d}.xyz", particle)
 
     duration = time.time() - start_time
 
-    # Save Initial and Final XYZ files
-    initial_xyz = os.path.join(tmp_dir, "initial.xyz")
+    # Save Final Structure
     final_xyz = os.path.join(tmp_dir, "final.xyz")
-    write(initial_xyz, ClusterBuilder(A, surfaces=SURFACES, layers=LAYERS))
     write(final_xyz, particle)
 
     # Save Excel Log
@@ -171,20 +168,11 @@ def run_simulation(params, progress_callback=None):
 
     wb.save(xlsx_file)
 
-    # ZIP all outputs
-    zip_file = os.path.join(tmp_dir, "simulation_artifacts.zip")
-    with zipfile.ZipFile(zip_file, 'w') as zipf:
-        zipf.write(initial_xyz, arcname="initial_structure.xyz")
-        zipf.write(final_xyz, arcname="final_structure.xyz")
-        zipf.write(xlsx_file, arcname="simulation_log.xlsx")
-        for file in os.listdir(traj_dir):
-            zipf.write(os.path.join(traj_dir, file), arcname=f"trajectory/{file}")
-
     return {
         "initial_xyz": initial_xyz,
         "final_xyz": final_xyz,
         "log": pd.DataFrame(log),
-        "zip_file": zip_file,
+        "xlsx_file": xlsx_file,
         "duration": duration,
         "initial_surface_data": initial_surface_data,
         "final_surface_data": count_surface(particle, A)
@@ -197,15 +185,16 @@ def make_download_link(path, label=None):
     href = f'<a href="data:application/octet-stream;base64,{b64}" download="{os.path.basename(path)}">📥 {label}</a>'
     st.markdown(href, unsafe_allow_html=True)
 
-def visualize_xyz(xyz_file, atom_A, atom_B, radius=1.5):
+def visualize_xyz(xyz_file, atom_A, atom_B, label="Structure"):
     with open(xyz_file) as f:
         xyz_data = f.read()
     view = py3Dmol.view(width=450, height=420)
     view.addModel(xyz_data, 'xyz')
-    view.setStyle({ "elem": atom_A }, { "sphere": { "color": "gold", "radius": radius } })
-    view.setStyle({ "elem": atom_B }, { "sphere": { "color": "green", "radius": radius } })
+    view.setStyle({ "elem": atom_A }, { "sphere": { "color": "gold", "radius": 1.5 } })
+    view.setStyle({ "elem": atom_B }, { "sphere": { "color": "green", "radius": 1.5 } })
     view.setBackgroundColor("white")
     view.zoomTo()
+    view.addLabel(label, {"fontSize": 16, "position": {"x":-10,"y":10,"z":0}})
     return view
 
 # ---- Streamlit Sidebar UI ----
@@ -242,11 +231,26 @@ with st.sidebar.expander("Energy Coefficients"):
         'xA-B': st.number_input("xA-B", value=-0.109575),
         'xA-S': st.number_input("xA-S", value=-0.250717),
         'xB-S': st.number_input("xB-S", value=-0.300000),
+        'xA-A-out': st.number_input("xA-A-out", value=0.184150),
+        'xB-B-out': st.number_input("xB-B-out", value=0.332228),
+        'xA-B-out': st.number_input("xA-B-out", value=0.051042),
     }
 
 run_button = st.sidebar.button("▶️ Run Simulation")
 progress_bar = st.sidebar.progress(0)
 status_placeholder = st.empty()
+
+# Developer Team Info
+st.sidebar.markdown("---")
+st.sidebar.markdown("### Developer Team")
+st.sidebar.markdown("""
+- **Project Developer**: Rayhan Miah  
+- **UI Developer**: Al Amin  
+- **System QC**: Abu Sadat  
+- **I/O QC**: Md. Sabbir Ahmed  
+- **Supervisor**: Dr. Md. Khorshed Alam  
+- **Affiliation**: KARL, BU
+""")
 
 # ---- Simulation Execution ----
 if run_button:
@@ -293,8 +297,9 @@ if run_button:
                     f"**Energy:** {progress_state['energy']:.4f} eV | "
                     f"**Surface {element_A} Ratio:** {progress_state['ratio']:.4f}"
                 )
-            time.sleep(0.1)
+            time.sleep(0.5)
 
+    # ---- Results Display ----
     if "error" in result_holder:
         st.error("❌ Simulation failed.")
         with st.expander("🔍 Error Details"):
@@ -316,11 +321,12 @@ if run_button:
         colA, colB = st.columns(2)
         with colA:
             st.markdown("**Initial Structure**")
-            view_init = visualize_xyz(res["initial_xyz"], element_A, element_B)
+            view_init = visualize_xyz(res["initial_xyz"], element_A, element_B, label="Initial")
             html(view_init._make_html(), height=420)
+
         with colB:
             st.markdown("**Final Structure**")
-            view_final = visualize_xyz(res["final_xyz"], element_A, element_B)
+            view_final = visualize_xyz(res["final_xyz"], element_A, element_B, label="Final")
             html(view_final._make_html(), height=420)
 
         st.subheader("Evolution Plots")
@@ -339,7 +345,10 @@ if run_button:
         st.pyplot(fig2)
 
         st.subheader("Download Artifacts")
-        make_download_link(res["zip_file"], "Download All Artifacts (.zip)")
+        with st.expander("Files"):
+            make_download_link(res["initial_xyz"], "Initial structure (.xyz)")
+            make_download_link(res["final_xyz"], "Final structure (.xyz)")
+            make_download_link(res["xlsx_file"], "Simulation log (.xlsx)")
 
         st.subheader("Raw Log Data")
         st.dataframe(df_log)
