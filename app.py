@@ -1,3 +1,4 @@
+# Monte Carlo Nanoparticle Simulator - Streamlit App (Polished & Debugged Version)
 import traceback
 import streamlit as st
 import pandas as pd
@@ -9,6 +10,7 @@ import math
 import tempfile
 import ast
 import base64
+import shutil
 from openpyxl import Workbook
 from ase.cluster import FaceCenteredCubic, BodyCenteredCubic, HexagonalClosedPacked
 from ase.io import write
@@ -23,7 +25,7 @@ st.set_page_config(page_title="Monte Carlo Nanoparticle Simulator", layout="wide
 # ---- Constants ----
 BOLTZMANN_K = 8.617333262e-5
 BULK_COORD = 12
-lattice_map = {
+LATTICE_MAP = {
     'fcc': FaceCenteredCubic,
     'bcc': BodyCenteredCubic,
     'hcp': HexagonalClosedPacked
@@ -72,16 +74,16 @@ def run_simulation(params, progress_callback=None):
     T = params['temperature']
     N_STEPS = params['n_steps']
     SAVE_INTERVAL = params['save_interval']
+    SNAPSHOT_INTERVAL = params['snapshot_interval']
     LAYERS = params['layers']
     SURFACES = params['surfaces']
     coeffs = params['coefficients']
     lattice_type = params['lattice_type']
 
-    ClusterBuilder = lattice_map.get(lattice_type)
+    ClusterBuilder = LATTICE_MAP.get(lattice_type)
     if ClusterBuilder is None:
-        raise ValueError(f"Unsupported lattice type '{lattice_type}'. Choose from 'fcc', 'bcc', or 'hcp'.")
+        raise ValueError(f"Unsupported lattice type '{lattice_type}'.")
 
-    # Build Initial Particle
     particle = ClusterBuilder(A, surfaces=SURFACES, layers=LAYERS)
     n_atoms = len(particle)
     n_A = int(n_atoms * composition_A)
@@ -91,89 +93,92 @@ def run_simulation(params, progress_callback=None):
 
     initial_surface_data = count_surface(particle, A)
 
-    # Prepare Storage
-    os.makedirs("trajectory", exist_ok=True)
-    log = []
-    energy = calculate_energy(particle, A, coeffs)
-    start_time = time.time()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log = []
+        energy = calculate_energy(particle, A, coeffs)
+        start_time = time.time()
 
-    # Monte Carlo Loop
-    for step in range(1, N_STEPS + 1):
-        i = np.random.randint(0, n_atoms)
-        neighbors = build_neighbor_list(particle).get_neighbors(i)[0]
-        if len(neighbors) == 0:
-            continue
-        j = np.random.choice(neighbors)
-        if particle[i].symbol == particle[j].symbol:
-            continue
+        nl = build_neighbor_list(particle, bothways=True, self_interaction=False)
 
-        trial = particle.copy()
-        trial[i].symbol, trial[j].symbol = trial[j].symbol, trial[i].symbol
-        dE = calculate_energy(trial, A, coeffs) - energy
+        for step in range(1, N_STEPS + 1):
+            i = np.random.randint(0, n_atoms)
+            neighbors = nl.get_neighbors(i)[0]
+            if len(neighbors) == 0:
+                continue
+            j = np.random.choice(neighbors)
+            if particle[i].symbol == particle[j].symbol:
+                continue
 
-        if dE < 0 or np.random.random() < math.exp(-dE / (BOLTZMANN_K * T)):
-            particle = trial
-            energy += dE
+            trial = particle.copy()
+            trial[i].symbol, trial[j].symbol = trial[j].symbol, trial[i].symbol
+            dE = calculate_energy(trial, A, coeffs) - energy
 
-        if step % SAVE_INTERVAL == 0:
-            total_A, surf, surf_A, ratio = count_surface(particle, A)
-            log.append({
-                'Step': step,
-                'Energy (eV)': energy,
-                f'Total {A}': total_A,
-                'Surface Atoms': surf,
-                f'{A} on Surface': surf_A,
-                f'Surface {A} Ratio': ratio
-            })
-            if progress_callback:
-                progress_callback(step, energy, ratio)
+            if dE < 0 or np.random.random() < math.exp(-dE / (BOLTZMANN_K * T)):
+                particle = trial
+                energy += dE
+                nl = build_neighbor_list(particle, bothways=True, self_interaction=False)
 
-        if step % params.get('snapshot_interval', 500) == 0:
-            write(f"trajectory/step_{step:05d}.xyz", particle)
+            if step % SAVE_INTERVAL == 0:
+                total_A, surf, surf_A, ratio = count_surface(particle, A)
+                log.append({
+                    'Step': step,
+                    'Energy (eV)': energy,
+                    f'Total {A}': total_A,
+                    'Surface Atoms': surf,
+                    f'{A} on Surface': surf_A,
+                    f'Surface {A} Ratio': ratio
+                })
+                if progress_callback:
+                    progress_callback(step, energy, ratio)
 
-    duration = time.time() - start_time
+            if step % SNAPSHOT_INTERVAL == 0:
+                write(os.path.join(tmpdir, f"step_{step:05d}.xyz"), particle)
 
-    # Save Initial and Final XYZ files
-    initial_xyz = tempfile.NamedTemporaryFile(delete=False, suffix='.xyz').name
-    final_xyz = tempfile.NamedTemporaryFile(delete=False, suffix='.xyz').name
-    write(initial_xyz, ClusterBuilder(A, surfaces=SURFACES, layers=LAYERS))
-    write(final_xyz, particle)
+        duration = time.time() - start_time
 
-    # Save Excel Log
-    xlsx_file = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx').name
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Simulation Log"
+        initial_xyz = os.path.join(tmpdir, 'initial.xyz')
+        final_xyz = os.path.join(tmpdir, 'final.xyz')
+        write(initial_xyz, ClusterBuilder(A, surfaces=SURFACES, layers=LAYERS))
+        write(final_xyz, particle)
 
-    meta = [
-        ("Element A", A), ("Element B", B), ("Composition A", composition_A),
-        ("Temperature (K)", T), ("MC Steps", N_STEPS),
-        ("Save Interval", SAVE_INTERVAL), ("Total Atoms", n_atoms)
-    ]
-    for i, (k, v) in enumerate(meta, 1):
-        ws.cell(row=i, column=1, value=k)
-        ws.cell(row=i, column=2, value=v)
+        xlsx_file = os.path.join(tmpdir, 'simulation_log.xlsx')
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Simulation Log"
 
-    header_row = len(meta) + 2
-    if log:
-        headers = list(log[0].keys())
-        for j, h in enumerate(headers, 1):
-            ws.cell(row=header_row, column=j, value=h)
-        for i, entry in enumerate(log, header_row + 1):
+        meta = [
+            ("Element A", A), ("Element B", B), ("Composition A", composition_A),
+            ("Temperature (K)", T), ("MC Steps", N_STEPS),
+            ("Save Interval", SAVE_INTERVAL), ("Total Atoms", n_atoms)
+        ]
+        for i, (k, v) in enumerate(meta, 1):
+            ws.cell(row=i, column=1, value=k)
+            ws.cell(row=i, column=2, value=v)
+
+        header_row = len(meta) + 2
+        if log:
+            headers = list(log[0].keys())
             for j, h in enumerate(headers, 1):
-                ws.cell(row=i, column=j, value=entry[h])
+                ws.cell(row=header_row, column=j, value=h)
+            for i, entry in enumerate(log, header_row + 1):
+                for j, h in enumerate(headers, 1):
+                    ws.cell(row=i, column=j, value=entry[h])
 
-    wb.save(xlsx_file)
+        wb.save(xlsx_file)
 
-    return {
-        "initial_xyz": initial_xyz,
-        "final_xyz": final_xyz,
-        "log": pd.DataFrame(log),
-        "xlsx_file": xlsx_file,
-        "duration": duration,
-        "initial_surface_data": initial_surface_data,
-        "final_surface_data": count_surface(particle, A)
-    }
+        zip_path = os.path.join(tmpdir, 'simulation_results.zip')
+        shutil.make_archive(zip_path.replace('.zip', ''), 'zip', tmpdir)
+
+        return {
+            "initial_xyz": initial_xyz,
+            "final_xyz": final_xyz,
+            "log": pd.DataFrame(log),
+            "xlsx_file": xlsx_file,
+            "duration": duration,
+            "initial_surface_data": initial_surface_data,
+            "final_surface_data": count_surface(particle, A),
+            "zip_file": zip_path
+        }
 
 def make_download_link(path, label=None):
     label = label or os.path.basename(path)
@@ -185,7 +190,6 @@ def make_download_link(path, label=None):
 def visualize_xyz(xyz_file, atom_A, atom_B, radius=1.5):
     with open(xyz_file) as f:
         xyz_data = f.read()
-
     view = py3Dmol.view(width=450, height=420)
     view.addModel(xyz_data, 'xyz')
     view.setStyle({ "elem": atom_A }, { "sphere": { "color": "gold", "radius": radius } })
@@ -228,25 +232,21 @@ with st.sidebar.expander("Energy Coefficients"):
         'xA-B': st.number_input("xA-B", value=-0.109575),
         'xA-S': st.number_input("xA-S", value=-0.250717),
         'xB-S': st.number_input("xB-S", value=-0.300000),
-        'xA-A-out': st.number_input("xA-A-out", value=0.184150),
-        'xB-B-out': st.number_input("xB-B-out", value=0.332228),
-        'xA-B-out': st.number_input("xA-B-out", value=0.051042),
     }
 
 run_button = st.sidebar.button("▶️ Run Simulation")
 progress_bar = st.sidebar.progress(0)
 status_placeholder = st.empty()
 
-# Developer team info at sidebar bottom
 st.sidebar.markdown("---")
 st.sidebar.markdown("### Developer Team")
 st.sidebar.markdown("""
 - **Project Developer** : Rayhan Miah  
-- **User Interface Developer** : Al Amin  
-- **System Quality Checker** : Abu Sadat  
+- **UI Developer** : Al Amin  
+- **Quality Checker** : Abu Sadat  
 - **System I/O QC** : Md. Sabbir Ahmed  
-- **Project Supervisor** : Dr. Md. Khorshed Alam
-- **Affiliation ** : KARL, BU
+- **Supervisor** : Dr. Md. Khorshed Alam  
+- **Affiliation** : KARL, BU
 """)
 
 # ---- Simulation Execution ----
@@ -294,9 +294,8 @@ if run_button:
                     f"**Energy:** {progress_state['energy']:.4f} eV | "
                     f"**Surface {element_A} Ratio:** {progress_state['ratio']:.4f}"
                 )
-            time.sleep(0.5)
+            time.sleep(0.1)
 
-    # ---- Results Display ----
     if "error" in result_holder:
         st.error("❌ Simulation failed.")
         with st.expander("🔍 Error Details"):
@@ -318,21 +317,13 @@ if run_button:
         colA, colB = st.columns(2)
         with colA:
             st.markdown("**Initial Structure**")
-            st.write(f"Total {element_A}: {init_total}")
-            st.write(f"Surface Atoms: {init_surf}")
-            st.write(f"{element_A} on Surface: {init_surf_A}")
-            st.write(f"Surface {element_A} Ratio: {init_ratio:.4f}")
             view_init = visualize_xyz(res["initial_xyz"], element_A, element_B)
-            html(view_init.render(), height=420)
+            html(view_init._make_html(), height=420)
 
         with colB:
             st.markdown("**Final Structure**")
-            st.write(f"Total {element_A}: {final_total}")
-            st.write(f"Surface Atoms: {final_surf}")
-            st.write(f"{element_A} on Surface: {final_surf_A}")
-            st.write(f"Surface {element_A} Ratio: {final_ratio:.4f}")
             view_final = visualize_xyz(res["final_xyz"], element_A, element_B)
-            html(view_final.render(), height=420)
+            html(view_final._make_html(), height=420)
 
         st.subheader("Evolution Plots")
         fig1, ax1 = plt.subplots()
@@ -354,6 +345,7 @@ if run_button:
             make_download_link(res["initial_xyz"], "Initial structure (.xyz)")
             make_download_link(res["final_xyz"], "Final structure (.xyz)")
             make_download_link(res["xlsx_file"], "Simulation log (.xlsx)")
+            make_download_link(res["zip_file"], "All Results (.zip)")
 
         st.subheader("Raw Log Data")
         st.dataframe(df_log)
