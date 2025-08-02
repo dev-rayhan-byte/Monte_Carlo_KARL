@@ -19,6 +19,7 @@ import py3Dmol
 
 # ---- Streamlit Page Config ----
 st.set_page_config(page_title="Monte Carlo Nanoparticle Simulator", layout="wide")
+# Developed By Rayhan Miah (rmiah19.phy@bu.ac.bd) on 1 August 2025.
 
 # ---- Constants ----
 BOLTZMANN_K = 8.617333262e-5
@@ -79,7 +80,7 @@ def run_simulation(params, progress_callback=None):
 
     ClusterBuilder = lattice_map.get(lattice_type)
     if ClusterBuilder is None:
-        raise ValueError(f"Unsupported lattice type '{lattice_type}'.")
+        raise ValueError(f"Unsupported lattice type '{lattice_type}'. Choose from 'fcc', 'bcc', or 'hcp'.")
 
     # Build Initial Particle
     particle = ClusterBuilder(A, surfaces=SURFACES, layers=LAYERS)
@@ -89,9 +90,12 @@ def run_simulation(params, progress_callback=None):
     for i in range(n_atoms):
         particle[i].symbol = A if i in indices_A else B
 
+    # Save initial structure after assignment
+    tmp_dir = tempfile.mkdtemp()
+    initial_xyz = os.path.join(tmp_dir, "initial.xyz")
+    write(initial_xyz, particle.copy())
+
     initial_surface_data = count_surface(particle, A)
-    initial_total_A = sum(1 for atom in particle if atom.symbol == A)
-    initial_total_B = n_atoms - initial_total_A
 
     # Prepare Storage
     os.makedirs("trajectory", exist_ok=True)
@@ -135,14 +139,12 @@ def run_simulation(params, progress_callback=None):
 
     duration = time.time() - start_time
 
-    # Save Initial and Final XYZ files
-    initial_xyz = tempfile.NamedTemporaryFile(delete=False, suffix='.xyz').name
-    final_xyz = tempfile.NamedTemporaryFile(delete=False, suffix='.xyz').name
-    write(initial_xyz, ClusterBuilder(A, surfaces=SURFACES, layers=LAYERS))
+    # Save Final Structure
+    final_xyz = os.path.join(tmp_dir, "final.xyz")
     write(final_xyz, particle)
 
     # Save Excel Log
-    xlsx_file = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx').name
+    xlsx_file = os.path.join(tmp_dir, "simulation_log.xlsx")
     wb = Workbook()
     ws = wb.active
     ws.title = "Simulation Log"
@@ -167,9 +169,6 @@ def run_simulation(params, progress_callback=None):
 
     wb.save(xlsx_file)
 
-    final_total_A = sum(1 for atom in particle if atom.symbol == A)
-    final_total_B = n_atoms - final_total_A
-
     return {
         "initial_xyz": initial_xyz,
         "final_xyz": final_xyz,
@@ -177,19 +176,17 @@ def run_simulation(params, progress_callback=None):
         "xlsx_file": xlsx_file,
         "duration": duration,
         "initial_surface_data": initial_surface_data,
-        "final_surface_data": count_surface(particle, A),
-        "initial_counts": (initial_total_A, initial_total_B),
-        "final_counts": (final_total_A, final_total_B)
+        "final_surface_data": count_surface(particle, A)
     }
 
 def make_download_link(path, label=None):
     label = label or os.path.basename(path)
     with open(path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode()
-    href = f'<a href="data:application/octet-stream;base64,{b64}" download="{os.path.basename(path)}">📥 {label}</a>'
+    href = f'<a href="data:application/octet-stream;base64,{b64}" download="{os.path.basename(path)}"> {label}</a>'
     st.markdown(href, unsafe_allow_html=True)
 
-def visualize_xyz(xyz_file, atom_A, atom_B, total_A, total_B, label="Structure"):
+def visualize_xyz(xyz_file, atom_A, atom_B, label="Structure"):
     with open(xyz_file) as f:
         xyz_data = f.read()
     view = py3Dmol.view(width=450, height=420)
@@ -198,24 +195,7 @@ def visualize_xyz(xyz_file, atom_A, atom_B, total_A, total_B, label="Structure")
     view.setStyle({ "elem": atom_B }, { "sphere": { "color": "green", "radius": 1.5 } })
     view.setBackgroundColor("white")
     view.zoomTo()
-
-    # Add Corner Label Title (Initial/Final)
-    view.addLabel(label, {
-        "fontSize": 18,
-        "position": {"x": -10, "y": 10, "z": 0},
-        "backgroundColor": "white",
-        "fontColor": "black"
-    })
-
-    # Atom Legend Top-Left
-    legend_text = f"{atom_A} ({total_A})\\n{atom_B} ({total_B})"
-    view.addLabel(legend_text, {
-        "fontSize": 14,
-        "position": {"x": -12, "y": 10, "z": 10},
-        "backgroundColor": "white",
-        "fontColor": "black"
-    })
-
+    view.addLabel(label, {"fontSize": 16, "position": {"x":-10,"y":10,"z":0}})
     return view
 
 # ---- Streamlit Sidebar UI ----
@@ -242,7 +222,7 @@ with st.sidebar.expander("Lattice / Geometry"):
     try:
         surfaces_parsed = ast.literal_eval(surfaces_input)
     except:
-        st.error("Invalid surface input! Using default.")
+        st.error("Invalid surface input! Using default [(1,1,1),(1,1,1),(1,1,0)]")
         surfaces_parsed = [(1,1,1),(1,1,1),(1,1,0)]
 
 with st.sidebar.expander("Energy Coefficients"):
@@ -257,7 +237,7 @@ with st.sidebar.expander("Energy Coefficients"):
         'xA-B-out': st.number_input("xA-B-out", value=0.051042),
     }
 
-run_button = st.sidebar.button("▶️ Run Simulation")
+run_button = st.sidebar.button("Run Simulation")
 progress_bar = st.sidebar.progress(0)
 status_placeholder = st.empty()
 
@@ -265,12 +245,12 @@ status_placeholder = st.empty()
 st.sidebar.markdown("---")
 st.sidebar.markdown("### Developer Team")
 st.sidebar.markdown("""
-- **Project Developer** : Rayhan Miah  
-- **User Interface Developer** : Al Amin  
-- **System Quality Checker** : Abu Sadat  
-- **System I/O QC** : Md. Sabbir Ahmed  
-- **Project Supervisor** : Dr. Md. Khorshed Alam  
-- **Affiliation** : KARL, BU
+- **Project Developer**: Rayhan Miah  
+- **UI Developer**: Al Amin  
+- **System QC**: Abu Sadat  
+- **I/O QC**: Md. Sabbir Ahmed  
+- **Supervisor**: Dr. Md. Khorshed Alam  
+- **Affiliation**: KARL, BU
 """)
 
 # ---- Simulation Execution ----
@@ -308,7 +288,7 @@ if run_button:
     thread = threading.Thread(target=simulation_thread)
     thread.start()
 
-    with st.spinner("🌀 Running Monte Carlo simulation... please wait..."):
+    with st.spinner("Running Monte Carlo simulation... please wait..."):
         while not progress_state["done"]:
             if progress_state["step"] > 0:
                 pct = min(progress_state["step"] / params['n_steps'], 1.0)
@@ -320,6 +300,7 @@ if run_button:
                 )
             time.sleep(0.5)
 
+    # ---- Results Display ----
     if "error" in result_holder:
         st.error("❌ Simulation failed.")
         with st.expander("🔍 Error Details"):
@@ -339,19 +320,14 @@ if run_button:
 
         st.subheader("Atomic Composition & Surface Details")
         colA, colB = st.columns(2)
-        init_A_count, init_B_count = res["initial_counts"]
-        final_A_count, final_B_count = res["final_counts"]
-
         with colA:
             st.markdown("**Initial Structure**")
-            view_init = visualize_xyz(res["initial_xyz"], element_A, element_B,
-                                      total_A=init_A_count, total_B=init_B_count, label="Initial")
+            view_init = visualize_xyz(res["initial_xyz"], element_A, element_B, label="Initial")
             html(view_init._make_html(), height=420)
 
         with colB:
             st.markdown("**Final Structure**")
-            view_final = visualize_xyz(res["final_xyz"], element_A, element_B,
-                                       total_A=final_A_count, total_B=final_B_count, label="Final")
+            view_final = visualize_xyz(res["final_xyz"], element_A, element_B, label="Final")
             html(view_final._make_html(), height=420)
 
         st.subheader("Evolution Plots")
